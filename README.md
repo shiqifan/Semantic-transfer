@@ -16,7 +16,7 @@ Supported datasets: ```tiktok```
 Start training and inference as:
 
 ```
-cd M3CSR
+cd Tie
 python main.py --dataset {DATASET}
 ```
 

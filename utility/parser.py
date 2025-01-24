@@ -8,7 +8,7 @@ def parse_args():
     parser.add_argument('--core', type=int, default=5, help='5-core for warm-start; 0-core for cold start')
     parser.add_argument('--lambda_coeff', type=float, default=0.9, help='Lambda value of skip connection')
 
-    parser.add_argument('--early_stopping_patience', type=int, default=10, help='') 
+    parser.add_argument('--early_stopping_patience', type=int, default=20, help='') 
     parser.add_argument('--layers', type=int, default=1, help='Number of feature graph conv layers')  
     parser.add_argument('--mess_dropout', nargs='?', default='[0.1, 0.1]', help='Keep probability w.r.t. message dropout (i.e., 1-dropout_ratio) for each deep layer. 1: no dropout.')
     parser.add_argument('--sparse', type=int, default=1, help='Sparse or dense adjacency matrix')   
@@ -47,19 +47,19 @@ def parse_args():
 
 
     #train
-    parser.add_argument('--data_path', nargs='?', default='/home/multi_modal/M3CSR/datasets/', help='Input data path.')
+    parser.add_argument('--data_path', nargs='?', default='/home/shiqifan/rq_vae/Tie/datasets/', help='Input data path.')
     parser.add_argument('--seed', type=int, default=2022, help='Random seed')
     parser.add_argument('--dataset', nargs='?', default='', help='Choose a dataset from {sports, baby, clothing, tiktok, allrecipes}')
-    parser.add_argument('--epoch', type=int, default=1000, help='Number of epoch.')  #default: 1000
+    parser.add_argument('--epoch', type=int, default=50, help='Number of epoch.')  #default: 1000
     parser.add_argument('--batch_size', type=int, default=1024, help='Batch size.')
-    parser.add_argument('--embed_size', type=int, default=64,help='Embedding size.')                     
+    parser.add_argument('--embed_size', type=int, default=64,help='Embedding size.')                   
     parser.add_argument('--D_lr', type=float, default=3e-4, help='Learning rate.')
     parser.add_argument('--topk', type=int, default=10, help='K value of k-NN sparsification')  
     parser.add_argument('--cf_model', nargs='?', default='slmrec', help='Downstream Collaborative Filtering model {mf}')   
     parser.add_argument('--debug', action='store_true')  
     parser.add_argument('--cl_rate', type=float, default=0.03, help='Control the effect of the contrastive auxiliary task')        
     parser.add_argument('--norm_type', nargs='?', default='sym', help='Adjacency matrix normalization operation') 
-    parser.add_argument('--gpu_id', type=int, default=0, help='GPU id')
+    parser.add_argument('--gpu_id', type=int, default=2, help='GPU id')
     parser.add_argument('--Ks', nargs='?', default='[2,4,6,8,10,12,14,16,18,20]', help='K value of ndcg/recall @ k')
     parser.add_argument('--regs', nargs='?', default='[1e-5,1e-5,1e-2]', help='for emb_loss.')  #default: '[1e-5,1e-5,1e-2]'
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate.')
@@ -101,6 +101,18 @@ def parse_args():
     parser.add_argument('--m_topk_rate', default=0.0001, type=float, help='for reconstruct')  
     parser.add_argument('--log_log_scale', default=0.00001, type=int, help='log_log_scale')  
     parser.add_argument('--point', default='', type=str, help='point')  
+
+    #rqvae
+    parser.add_argument('--rq_batch_size', type=int, default=512, help='batch size')
+    parser.add_argument('--n_epoch', type=int, default=50, help='the number of epochs')
+    parser.add_argument('--l2_weight', type=float, default=1e-5, help='weight of the l2 regularization term')
+    parser.add_argument('--rq_lr', type=float, default=0.001, help='learning rate')
+    parser.add_argument('--mutimodal_input_dim', type=int, default=1024,help='Embedding size.')   
+    parser.add_argument('--mutimodal_hidden_dim', type=int, default=256,help='Embedding size.')   
+    parser.add_argument('--codelen', type=int, default=3, help='')
+    parser.add_argument('--codesize', type=int, default=32, help='')
+
+    parser.add_argument('--codedim', type=int, default=64,help='codedim')  
 
     return parser.parse_args()
 

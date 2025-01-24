@@ -1,4 +1,3 @@
-
 import numpy as np
 import random as rd
 import scipy.sparse as sp
@@ -15,6 +14,12 @@ class Data(object):
         train_file = path + '/train.json' #+ '/%d-core/train.json' % (args.core)
         val_file = path + '/val.json' #+ '/%d-core/val.json' % (args.core)
         test_file = path + '/test.json' #+ '/%d-core/test.json'  % (args.core)
+        cold_test_file = path + '/cold_test.json'
+        warm_test_file = path + '/warm_test.json'
+        # cold_test_file = path + '/new_cold_test.json'
+        # warm_test_file = path + '/new_warm_test.json'
+        # train_vv_rate_file = path + '/train_vv_rate.json'
+        train_vv_rate_file = path + '/new_train_vv_rate.json'
 
         #get number of users and items
         self.n_users, self.n_items = 0, 0
@@ -26,6 +31,10 @@ class Data(object):
         train = json.load(open(train_file))
         test = json.load(open(test_file))
         val = json.load(open(val_file))
+        cold_test = json.load(open(cold_test_file))
+        warm_test = json.load(open(warm_test_file))
+        train_vv_rate = json.load(open(train_vv_rate_file))
+
         for uid, items in train.items():
             if len(items) == 0:
                 continue
@@ -60,6 +69,8 @@ class Data(object):
         self.R_Item_Interacts = sp.dok_matrix((self.n_items, self.n_items), dtype=np.float32)
 
         self.train_items, self.test_set, self.val_set = {}, {}, {}
+        self.cold_test_set, self.warm_test_set = {}, {}
+        self.train_vv_set = {}
         for uid, train_items in train.items():
             if len(train_items) == 0:
                 continue
@@ -68,6 +79,11 @@ class Data(object):
                 self.R[uid, i] = 1.
 
             self.train_items[uid] = train_items
+        
+        for item, vv_rate in train_vv_rate.items():
+            
+            item = int(item)
+            self.train_vv_set[item] = vv_rate
 
         for uid, test_items in test.items():
             uid = int(uid)
@@ -85,7 +101,25 @@ class Data(object):
             try:
                 self.val_set[uid] = val_items
             except:
-                continue            
+                continue  
+
+        for uid, cold_test_items in cold_test.items():
+            uid = int(uid)
+            if len(cold_test_items) == 0:
+                continue
+            try:
+                self.cold_test_set[uid] = cold_test_items
+            except:
+                continue
+        
+        for uid, warm_test_items in warm_test.items():
+            uid = int(uid)
+            if len(warm_test_items) == 0:
+                continue
+            try:
+                self.warm_test_set[uid] = warm_test_items
+            except:
+                continue
 
     def get_adj_mat(self):
         try:
@@ -161,6 +195,7 @@ class Data(object):
             pos_items = self.train_items[u]
             n_pos_items = len(pos_items)
             pos_batch = []
+            vv_rate_batch = []
             while True:
                 if len(pos_batch) == num: break
                 pos_id = np.random.randint(low=0, high=n_pos_items, size=1)[0]
@@ -168,7 +203,8 @@ class Data(object):
 
                 if pos_i_id not in pos_batch:
                     pos_batch.append(pos_i_id)
-            return pos_batch
+                    vv_rate_batch.append(self.train_vv_set[pos_i_id])
+            return pos_batch, vv_rate_batch
 
         def sample_neg_items_for_u(u, num):
             neg_items = []
@@ -183,12 +219,14 @@ class Data(object):
             neg_items = list(set(self.neg_pools[u]) - set(self.train_items[u]))
             return rd.sample(neg_items, num)
 
-        pos_items, neg_items = [], []
+        pos_items, neg_items, items_vv_rate = [], [], []
         for u in users:
-            pos_items += sample_pos_items_for_u(u, 1)
+            pos_batch, vv_rate_batch = sample_pos_items_for_u(u, 1)
+            pos_items += pos_batch
+            items_vv_rate += vv_rate_batch
             neg_items += sample_neg_items_for_u(u, 1)
             # neg_items += sample_neg_items_for_u(u, 3)
-        return users, pos_items, neg_items
+        return users, pos_items, neg_items, items_vv_rate
         
 
     def print_statistics(self):

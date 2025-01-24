@@ -44,7 +44,7 @@ class Transformer(nn.Module):
 
         return mha_result
 
-class M3CSR(nn.Module):
+class Tie(nn.Module):
     def __init__(self, n_users, n_items, embedding_dim, dataset, image_feats, text_feats, audio_feats, cluster_num, vv_num):
 
         super().__init__()
@@ -92,6 +92,9 @@ class M3CSR(nn.Module):
         self.vv_id_embedding = nn.Embedding(self.vv_num, self.embedding_dim)
         nn.init.xavier_uniform_(self.vv_id_embedding.weight)
 
+        size = [args.codesize] * args.codelen
+        self.item_sid_embeddings = nn.ModuleList(modules=[nn.Embedding(i, self.embedding_dim) for i in size])
+
         self.image_feats = torch.tensor(image_feats).float().cuda()
         self.text_feats = torch.tensor(text_feats).float().cuda()
         self.image_embedding = nn.Embedding.from_pretrained(torch.Tensor(image_feats), freeze=False)
@@ -121,21 +124,22 @@ class M3CSR(nn.Module):
         self.user_two_hop_transformer = Transformer(col = 64, nh = 4, action_item_size = 64, att_emb_size = 16)
         self.photo_one_hop_transformer = Transformer(col = 64, nh = 4, action_item_size = 64, att_emb_size = 16)
         self.photo_two_hop_transformer = Transformer(col = 64, nh = 4, action_item_size = 64, att_emb_size = 16)
-        self.user_image_transformer = Transformer(col = 64, nh = 4, action_item_size = 128, att_emb_size = 16)
-        self.user_text_transformer = Transformer(col = 64, nh = 4, action_item_size = 128, att_emb_size = 16)
+        # self.user_image_transformer = Transformer(col = 64, nh = 4, action_item_size = 128, att_emb_size = 16)
+        # self.user_text_transformer = Transformer(col = 64, nh = 4, action_item_size = 128, att_emb_size = 16)
+        self.user_image_transformer = Transformer(col = 64, nh = 4, action_item_size = 64, att_emb_size = 16)
+        self.user_text_transformer = Transformer(col = 64, nh = 4, action_item_size = 64, att_emb_size = 16)
 
         if self.dataset == 'tiktok':
             self.user_audio_transformer = Transformer(col = 64, nh = 4, action_item_size = 128, att_emb_size = 16)
  
 
+
     # user_one_hop 每个用户交互的u2i，做好填充 [[10个], [10个], ...]
     # user_two_hop 每个用户交互的u2i2u，做好填充 [[10个], [10个], ...]
     # photo_one_hop 每个视频被交互的i2u，做好填充 [[10个], [10个], ...]
     # photo_two_hop 每个视频被交互的i2u2i，做好填充 [[10个], [10个], ...]
-    # user_cluster_ids 每个用户交互的u2i的聚类id，做好填充 [[10个], [10个], ...]
-    # photo_cluster_id 每个视频的聚类id [id, id, ...]
     # photo_vv 每个视频的vv分层id [id, id, ...]
-    def forward(self, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv):
+    def forward(self, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, item_output):
         # user tower
         ## user id
         user_one_hop_embeddings = self.photo_id_embedding(user_one_hop) # [user_num, 6, 64]
@@ -152,12 +156,13 @@ class M3CSR(nn.Module):
         user_id_top_normalized = F.normalize(user_id_top, p = 2, dim = -1)
 
         ## user image
-        user_image_emb = self.image_embedding(user_one_hop) 
+        user_image_emb = self.image_embedding(user_one_hop)
         user_image_cluster_ids = self.image_cluster_id_embedding(user_cluster_ids) # [user_num, 10, 64]
         user_image_mapping = self.user_image_dense(user_image_emb) # [user_num, 10, 64]
         user_image = torch.cat((user_image_mapping, user_image_cluster_ids), dim = -1) # [user_num, 10, 128]
     
-        user_image_interest = self.user_image_transformer(user_query, user_image) # [user_num, 64]
+        # user_image_interest = self.user_image_transformer(user_query, user_image) # [user_num, 64]
+        user_image_interest = self.user_image_transformer(user_query, user_image_mapping) # [user_num, 64]
 
         user_image_interest_normalized = F.normalize(user_image_interest, p = 2, dim = -1)
 
@@ -167,7 +172,8 @@ class M3CSR(nn.Module):
         user_text_mapping = self.user_text_dense(user_text_emb)
         user_text = torch.cat((user_text_mapping, user_text_cluster_ids), dim = -1)
     
-        user_text_interest = self.user_text_transformer(user_query, user_text)
+        # user_text_interest = self.user_text_transformer(user_query, user_text)
+        user_text_interest = self.user_text_transformer(user_query, user_text_mapping)
 
         user_text_interest_normalized = F.normalize(user_text_interest, p = 2, dim = -1)
 
@@ -220,6 +226,13 @@ class M3CSR(nn.Module):
 
 
         # photo tower
+        ## sid
+        item_sid = item_output.sem_ids.cuda().detach()
+        item_sids = torch.split(item_sid, 1, dim=1)
+        item_sid_embedding = sum([f(x.squeeze()) for f, x in zip(self.item_sid_embeddings, item_sids)])
+
+        item_pid_embedding = F.normalize(self.photo_id_embedding.weight, p = 2, dim = -1)
+
         ## photo id
         photo_one_hop_embeddings = self.user_id_embedding(photo_one_hop) # [photo_num, 10, 64]
         photo_two_hop_embeddings = self.photo_id_embedding(photo_two_hop) # [photo_num, 10, 64]
@@ -239,20 +252,22 @@ class M3CSR(nn.Module):
         photo_image_cluster_ids = self.image_cluster_id_embedding(photo_cluster_id) # [photo_num, 64]
 
         photo_image_mapping = self.photo_image_dense(photo_image_emb) # [photo_num, 64]
-        photo_image = torch.cat((photo_image_mapping, photo_image_cluster_ids), dim = -1) # [photo_num, 128]
+        # photo_image = torch.cat((photo_image_mapping, photo_image_cluster_ids), dim = -1) # [photo_num, 128]
 
-        photo_image = self.photo_image_top_dense(photo_image) # [photo_num, 64]
-        photo_image_normalized = F.normalize(photo_image, dim = -1)
+        # photo_image = self.photo_image_top_dense(photo_image) # [photo_num, 64]
+        # photo_image_normalized = F.normalize(photo_image, dim = -1)
+        photo_image_normalized = F.normalize(photo_image_mapping, dim = -1)
 
         ## photo image
         photo_text_emb = self.text_embedding.weight
         photo_text_cluster_ids = self.text_cluster_id_embedding(photo_cluster_id)
 
         photo_text_mapping = self.photo_text_dense(photo_text_emb)
-        photo_text = torch.cat((photo_text_mapping, photo_text_cluster_ids), dim = -1)
-        
-        photo_text = self.photo_text_top_dense(photo_text)
-        photo_text_normalized = F.normalize(photo_text, dim = -1)
+        # photo_text = torch.cat((photo_text_mapping, photo_text_cluster_ids), dim = -1)
+
+        # photo_text = self.photo_text_top_dense(photo_text)
+        # photo_text_normalized = F.normalize(photo_text, dim = -1)
+        photo_text_normalized = F.normalize(photo_text_mapping, dim = -1)
 
         if self.dataset == 'tiktok':
             ## photo audio
@@ -261,7 +276,7 @@ class M3CSR(nn.Module):
 
             photo_audio_mapping = self.photo_audio_dense(photo_audio_emb)
             photo_audio = torch.cat((photo_audio_mapping, photo_audio_cluster_ids), dim = -1)
-            
+
             photo_audio = self.photo_audio_top_dense(photo_audio)
             photo_audio_normalized = F.normalize(photo_audio, dim = -1)
 
@@ -272,9 +287,10 @@ class M3CSR(nn.Module):
         # gate for behavior and mmu
         b_m_weight = torch.sigmoid(self.pop_dense(self.vv_id_embedding(photo_vv)))
 
-        photo_tower = torch.cat((b_m_weight * photo_id_top_normalized, (1 - b_m_weight) * photo_mmu), dim = -1)
+        # photo_tower = torch.cat((b_m_weight * photo_id_top_normalized, (1 - b_m_weight) * photo_mmu), dim = -1)
+        photo_tower = torch.cat((photo_id_top_normalized, photo_mmu), dim = -1)
 
         if self.dataset == 'tiktok':
-            return user_tower, photo_tower, user_image_interest_weighted, user_text_interest_weighted, user_audio_interest_weighted
+            return user_tower, photo_tower, item_pid_embedding, item_sid_embedding, user_image_interest_weighted, user_text_interest_weighted, user_audio_interest_weighted
         else:
-            return user_tower, photo_tower, user_image_interest_weighted, user_text_interest_weighted, None
+            return user_tower, photo_tower, item_pid_embedding, item_sid_embedding, user_image_interest_weighted, user_text_interest_weighted, None

@@ -17,10 +17,11 @@ from torch import autograd
 import copy
 
 from utility.parser import parse_args
-from Models import M3CSR
+from Models import Tie
 from utility.batch_test import *
 from utility.logging import Logger
 from torch.utils.tensorboard import SummaryWriter
+from modules.rqvae import RqVae
 
 args = parse_args()
 
@@ -69,14 +70,15 @@ class Trainer(object):
             self.seq_len = 6
             self.cluster_num = args.c_num
             self.vv_num = args.vv_num
-        elif args.dataset == 'allrecipes':
-            self.n_users = 19805
-            self.n_items = 10068
-            self.seq_len = 3
+        elif args.dataset == 'netflix':
+            self.n_users = 13187
+            self.n_items = 8413
+            self.seq_len = 6
             self.cluster_num = args.c_num
             self.vv_num = args.vv_num
         
-        self.model = M3CSR(self.n_users, self.n_items, self.emb_dim, args.dataset, self.image_feats, self.text_feats, self.audio_feats, self.cluster_num, self.vv_num)
+        self.model = Tie(self.n_users, self.n_items, self.emb_dim, args.dataset, self.image_feats, self.text_feats, self.audio_feats, self.cluster_num, self.vv_num)
+        # self.model = STB(self.n_users, self.n_items, self.emb_dim, args.dataset, self.image_feats, self.text_feats, self.audio_feats, self.cluster_num, self.vv_num)
         self.model = self.model.cuda()
 
         self.optimizer_D = optim.AdamW([{'params':self.model.parameters()},], lr=self.lr)  
@@ -88,14 +90,71 @@ class Trainer(object):
         scheduler_D = optim.lr_scheduler.LambdaLR(self.optimizer_D, lr_lambda=fac)
         return scheduler_D  
 
-    def test(self, users_to_test, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, is_val):
+    def test(self, users_to_test, users_to_cold_test, users_to_warm_test, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, item_output, is_val):
         self.model.eval()
         with torch.no_grad():
-            ua_embeddings, ia_embeddings, _, _, _ = self.model(user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv)
+            ua_embeddings, ia_embeddings, _, _, _, _, _ = self.model(user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, item_output)
         result = test_torch(ua_embeddings, ia_embeddings, users_to_test, is_val)
-        return result
+        result_cold = cold_test_torch(ua_embeddings, ia_embeddings, users_to_cold_test, is_val)
+        result_warm = warm_test_torch(ua_embeddings, ia_embeddings, users_to_warm_test, is_val)
+        return result, result_cold, result_warm
+    
 
     def train(self):
+
+        self.criterion = nn.MSELoss(reduction='none')
+
+        rou = 0.07
+        vae_input_dim = args.codedim
+        vae_embed_dim = args.codedim
+        vae_hidden_dim = args.codedim
+        if args.dataset == 'tiktok':
+            visual_input_dim = 128
+            visual_hidden_dim = 64
+            visual_output_dim = int(args.codedim / 2)
+            text_input_dim = 768
+            text_hidden_dim = 192
+            text_output_dim = int(args.codedim / 2)
+        elif args.dataset == 'sports' or args.dataset == 'baby':
+            visual_input_dim = 4096
+            visual_hidden_dim = 256
+            visual_output_dim = int(args.codedim / 2)
+            text_input_dim = 1024
+            text_hidden_dim = 128
+            text_output_dim = int(args.codedim / 2)
+        elif args.dataset == 'netflix':
+            visual_input_dim = 512
+            visual_hidden_dim = 128
+            visual_output_dim = int(args.codedim / 2)
+            text_input_dim = 768
+            text_hidden_dim = 256
+            text_output_dim = int(args.codedim / 2)
+
+        
+        vae_n_layers = args.codelen
+        vae_codebook_size = [args.codesize] * args.codelen
+        
+
+        item_load_path = '/home/shiqifan/rq_vae/STB/datasets/' + args.dataset + '/item_codelen_{}_codesize_{}_codedim_{}.pth'.format(args.codelen, args.codesize, args.codedim)
+        
+
+        item_codebook = RqVae(
+            rou=rou,
+            input_dim=vae_input_dim,
+            embed_dim=vae_embed_dim,
+            hidden_dim=vae_hidden_dim,
+            visual_input_dim=visual_input_dim,
+            visual_hidden_dim=visual_hidden_dim,
+            visual_output_dim=visual_output_dim,
+            text_input_dim=text_input_dim,
+            text_hidden_dim=text_hidden_dim,
+            text_output_dim=text_output_dim,
+            codebook_size=vae_codebook_size,
+            n_layers=vae_n_layers
+        )
+
+        item_codebook.load_state_dict(torch.load(item_load_path))
+        item_codebook = item_codebook.cuda()
 
         now_time = datetime.now()
         run_time = datetime.strftime(now_time,'%Y_%m_%d__%H_%M_%S')
@@ -110,6 +169,9 @@ class Trainer(object):
         n_batch = data_generator.n_train // args.batch_size + 1
         best_recall = 0
 
+        final_recall, final_precison, final_ndcg = [], [], []
+        final_c_recall, final_c_precison, final_c_ndcg = [], [], []
+        final_w_recall, final_w_precison, final_w_ndcg = [], [], []
         for epoch in range(args.epoch):
             t1 = time()
             loss, mf_loss, emb_loss, reg_loss, cl_loss = 0., 0., 0., 0., 0.
@@ -117,10 +179,12 @@ class Trainer(object):
             n_batch = data_generator.n_train // args.batch_size + 1
             sample_time = 0.
 
+
             for idx in tqdm(range(n_batch)):
                 self.model.train()
                 sample_t1 = time()
-                users, pos_items, neg_items,  = data_generator.sample()
+                users, pos_items, neg_items, items_vv_rate = data_generator.sample()
+                items_vv_rate = torch.tensor(items_vv_rate).unsqueeze(1).float().cuda()
                 sample_time += time() - sample_t1
 
                 # user_one_hop 每个用户交互的u2i，做好填充 [[10个], [10个], ...]
@@ -229,14 +293,26 @@ class Trainer(object):
                 photo_cluster_id = torch.tensor(self.cluster_ids).cuda()
                 photo_vv = torch.tensor(self.vv_ids).cuda()
 
-                G_ua_embeddings, G_ia_embeddings, u_v_emb, u_t_emb, u_a_emb = self.model(user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv)
+                image_feats_tensor = torch.tensor(self.image_feats).float().cuda()
+                text_feats_tensor = torch.tensor(self.text_feats).float().cuda()
+                item_output = item_codebook.get_semantic_ids(image_feats_tensor, text_feats_tensor)
+
+                G_ua_embeddings, G_ia_embeddings, G_pid_embeddings, G_sid_embeddings, u_v_emb, u_t_emb, u_a_emb = self.model(user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, item_output)
+
+                # G_ua_embeddings, G_ia_embeddings, u_v_emb, u_t_emb, u_a_emb = self.model(user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv)
 
                 G_u_g_embeddings = G_ua_embeddings[users]
                 G_pos_i_g_embeddings = G_ia_embeddings[pos_items]
                 G_neg_i_g_embeddings = G_ia_embeddings[neg_items]
+
+                G_pos_pid_embeddings = G_pid_embeddings[pos_items]
+                G_pos_sid_embeddings = G_sid_embeddings[pos_items]
+
+                transfer_loss = self.transfer(G_pos_pid_embeddings, G_pos_sid_embeddings, items_vv_rate)
                 G_batch_mf_loss, G_batch_emb_loss, G_batch_reg_loss, G_batch_cl_loss = self.bpr_loss(G_u_g_embeddings, G_pos_i_g_embeddings, G_neg_i_g_embeddings, u_v_emb, u_t_emb, u_a_emb)
 
-                batch_loss = G_batch_mf_loss + G_batch_emb_loss + G_batch_reg_loss + G_batch_cl_loss
+                batch_loss = G_batch_mf_loss + G_batch_emb_loss + G_batch_reg_loss + G_batch_cl_loss + transfer_loss
+                # batch_loss = G_batch_mf_loss + G_batch_emb_loss + G_batch_reg_loss + G_batch_cl_loss
                                                                                                    
                 self.optimizer_D.zero_grad()  
                 batch_loss.backward(retain_graph=False)
@@ -265,40 +341,52 @@ class Trainer(object):
             t2 = time()
             users_to_test = list(data_generator.test_set.keys())
             users_to_val = list(data_generator.val_set.keys())
-            ret = self.test(users_to_val, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, is_val=True)  
+            users_to_cold_test = list(data_generator.cold_test_set.keys())
+            users_to_warm_test = list(data_generator.warm_test_set.keys())
+            # ret = self.test(users_to_val, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, is_val=True)  
+            test_ret, test_cold_ret, test_warm_ret = self.test(users_to_test, users_to_cold_test, users_to_warm_test, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, item_output, is_val=False)
             training_time_list.append(t2 - t1)
 
             t3 = time()
 
             loss_loger.append(loss)
-            rec_loger.append(ret['recall'].data)
-            pre_loger.append(ret['precision'].data)
-            ndcg_loger.append(ret['ndcg'].data)
-            hit_loger.append(ret['hit_ratio'].data)
+            rec_loger.append(test_ret['recall'].data)
+            pre_loger.append(test_ret['precision'].data)
+            ndcg_loger.append(test_ret['ndcg'].data)
+            hit_loger.append(test_ret['hit_ratio'].data)
 
             tags = ["recall", "precision", "ndcg"]
 
-            if args.verbose > 0:
-                perf_str = 'Epoch %d [%.1fs + %.1fs]: train==[%.5f=%.5f + %.5f + %.5f + %.5f], recall=[%.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f], ' \
-                           'precision=[%.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f], ndcg=[%.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f, %.5f]' % \
-                           (epoch, t2 - t1, t3 - t2, loss, mf_loss, emb_loss, reg_loss, cl_loss, ret['recall'][0], ret['recall'][1], ret['recall'][2], ret['recall'][3], ret['recall'][4], ret['recall'][5], ret['recall'][6], ret['recall'][7], ret['recall'][8], ret['recall'][9], ret['precision'][0], ret['precision'][1], ret['precision'][2], ret['precision'][3], ret['precision'][4], ret['precision'][5], ret['precision'][6], ret['precision'][7], ret['precision'][8], ret['precision'][9], ret['ndcg'][0], ret['ndcg'][1], ret['ndcg'][2], ret['ndcg'][3], ret['ndcg'][4], ret['ndcg'][5], ret['ndcg'][6], ret['ndcg'][7], ret['ndcg'][8], ret['ndcg'][9])
-                self.logger.logging(perf_str)
+            
+            self.logger.logging("Test_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_ret['recall'][-1], test_ret['precision'][-1], test_ret['ndcg'][-1]))
+            self.logger.logging("Test_Cold_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_cold_ret['recall'][-1], test_cold_ret['precision'][-1], test_cold_ret['ndcg'][-1]))
+            self.logger.logging("Test_Warm_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_warm_ret['recall'][-1], test_warm_ret['precision'][-1], test_warm_ret['ndcg'][-1]))
+            final_recall.append(test_ret['recall'][-1])
+            final_precison.append(test_ret['precision'][-1])
+            final_ndcg.append(test_ret['ndcg'][-1])
 
-            if ret['recall'][-1] > best_recall:
-                best_recall = ret['recall'][-1]
-                test_ret = self.test(users_to_test, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, is_val=False)
-                self.logger.logging("Test_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_ret['recall'][-1], test_ret['precision'][-1], test_ret['ndcg'][-1]))
-                stopping_step = 0
-            elif stopping_step < args.early_stopping_patience:
-                stopping_step += 1
-                self.logger.logging('#####Early stopping steps: %d #####' % stopping_step)
-            else:
-                self.logger.logging('#####Early stop! #####')
-                break
-        self.logger.logging(str(test_ret))
+            final_c_recall.append(test_cold_ret['recall'][-1])
+            final_c_precison.append(test_cold_ret['precision'][-1])
+            final_c_ndcg.append(test_cold_ret['ndcg'][-1])
+
+            final_w_recall.append(test_warm_ret['recall'][-1])
+            final_w_precison.append(test_warm_ret['precision'][-1])
+            final_w_ndcg.append(test_warm_ret['ndcg'][-1])
+            
+
+        index = torch.argmax(torch.tensor(final_recall))
+        self.logger.logging('#####final result! #####')
+        self.logger.logging("Test_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], final_recall[index],  final_precison[index], final_ndcg[index]))
+        self.logger.logging("Test_Cold_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], final_c_recall[index], final_c_precison[index], final_c_ndcg[index]))
+        self.logger.logging("Test_Warm_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], final_w_recall[index], final_w_precison[index], final_w_ndcg[index]))
 
         return best_recall, run_time 
 
+    def transfer(self, pid_emb, sid_emb, vv_rate):
+        loss_hot = self.criterion(sid_emb, pid_emb.detach()).mean(dim=1, keepdim=True)
+        loss_cold = self.criterion(pid_emb, sid_emb.detach()).mean(dim=1, keepdim=True)
+        loss = vv_rate * loss_hot + 10*(1 - vv_rate) * loss_cold
+        return loss.mean()
 
     def bpr_loss(self, users, pos_items, neg_items, u_v_emb, u_t_emb, u_a_emb):
         pos_scores = torch.sum(torch.mul(users, pos_items), dim=1)

@@ -372,6 +372,21 @@ class Trainer(object):
             final_w_recall.append(test_warm_ret['recall'][-1])
             final_w_precison.append(test_warm_ret['precision'][-1])
             final_w_ndcg.append(test_warm_ret['ndcg'][-1])
+
+            # if ret['recall'][-1] > best_recall:
+            #     best_recall = ret['recall'][-1]
+            #     # test_ret = self.test(users_to_test, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, is_val=False)
+            #     test_ret, test_cold_ret, test_warm_ret = self.test(users_to_test, users_to_cold_test, users_to_warm_test, user_one_hop, user_two_hop, photo_one_hop, photo_two_hop, user_cluster_ids, photo_cluster_id, photo_vv, item_output, is_val=False)
+            #     self.logger.logging("Test_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_ret['recall'][-1], test_ret['precision'][-1], test_ret['ndcg'][-1]))
+            #     self.logger.logging("Test_Cold_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_cold_ret['recall'][-1], test_cold_ret['precision'][-1], test_cold_ret['ndcg'][-1]))
+            #     self.logger.logging("Test_Warm_Recall@%d: %.5f,  precision=[%.5f], ndcg=[%.5f]" % (eval(args.Ks)[-1], test_warm_ret['recall'][-1], test_warm_ret['precision'][-1], test_warm_ret['ndcg'][-1]))
+            #     stopping_step = 0
+            # elif stopping_step < args.early_stopping_patience:
+            #     stopping_step += 1
+            #     self.logger.logging('#####Early stopping steps: %d #####' % stopping_step)
+            # else:
+            #     self.logger.logging('#####Early stop! #####')
+            #     break
             
 
         index = torch.argmax(torch.tensor(final_recall))

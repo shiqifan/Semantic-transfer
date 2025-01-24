@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument('--data_path', nargs='?', default='/home/shiqifan/rq_vae/Tie/datasets/', help='Input data path.')
     parser.add_argument('--seed', type=int, default=2022, help='Random seed')
     parser.add_argument('--dataset', nargs='?', default='', help='Choose a dataset from {sports, baby, clothing, tiktok, allrecipes}')
-    parser.add_argument('--epoch', type=int, default=50, help='Number of epoch.')  #default: 1000
+    parser.add_argument('--epoch', type=int, default=200, help='Number of epoch.')  #default: 1000
     parser.add_argument('--batch_size', type=int, default=1024, help='Batch size.')
     parser.add_argument('--embed_size', type=int, default=64,help='Embedding size.')                   
     parser.add_argument('--D_lr', type=float, default=3e-4, help='Learning rate.')

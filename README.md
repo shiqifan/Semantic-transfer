@@ -16,7 +16,7 @@ Supported datasets: ```tiktok```
 Start training and inference as:
 
 ```
-python main.py --dataset {DATASET} --codelen {CODELEN} --codesize {CODESIZE}
+python main.py --dataset {DATASET} --codelen {CODELEN} --codesize {CODESIZE} --codedim {CODEDIM}
 ```
 
 ## Notes
